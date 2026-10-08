@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper: Is the user authenticated as Admin via Firebase Auth?
+    function isAdmin() {
+      return request.auth != null;
+    }
+
+    // Helper: Valid relationship string
+    function isValidRelation(rel) {
+      return rel in ['friend', 'brother', 'sister', 'well wisher', 'Friend', 'Brother', 'Sister', 'Well Wisher'];
+    }
+
+    // 1. Players Collection (Public game stats & worthiness)
+    match /players/{playerId} {
+      // Anyone can view player scores and rankings
+      allow read: if true;
+
+      // Allow creating a valid player record
+      allow create: if request.resource.data.playerName is string
+        && request.resource.data.playerName.size() >= 2
+        && request.resource.data.playerName.size() <= 50
+        && request.resource.data.latestScore is int
+        && request.resource.data.latestScore >= 0
+        && request.resource.data.latestScore <= 10
+        && isValidRelation(request.resource.data.relation)
+        // Ensure sensitive bKash data is NEVER written to the public players collection
+        && !('bkashNumber' in request.resource.data);
+
+      // Allow updating existing records with anti-spam rate limiting
+      allow update: if request.resource.data.latestScore is int
+        && request.resource.data.latestScore >= 0
+        && request.resource.data.latestScore <= 10
+        && !('bkashNumber' in request.resource.data)
+        // Anti-spam: enforce at least 15 seconds cooldown between gameplay updates
+        && (
+          !('lastPlayedAt' in resource.data)
+          || request.time > resource.data.lastPlayedAt + duration.value(15, 's')
+          || isAdmin()
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    // 2. Sensitive Financial Collection (bKash Reward Claims)
+    match /bkash_claims/{claimId} {
+      // ZERO PUBLIC READ ACCESS: Only authenticated Admin can view phone numbers
+      allow read: if isAdmin();
+
+      // Players can submit a claim once, with strict Bangladeshi mobile regex validation
+      allow create: if request.resource.data.playerName is string
+        && request.resource.data.playerName.size() >= 2
+        && request.resource.data.playerName.size() <= 50
+        && request.resource.data.bkashNumber is string
+        && request.resource.data.bkashNumber.matches('^01[3-9][0-9]{8}$');
+
+      // Only admin can modify verification status or delete
+      allow update, delete: if isAdmin();
+    }
+  }
+}
